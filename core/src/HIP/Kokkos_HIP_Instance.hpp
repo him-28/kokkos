@@ -47,6 +47,7 @@
 #ifndef KOKKOS_HIP_INSTANCE_HPP
 #define KOKKOS_HIP_INSTANCE_HPP
 
+#include <Kokkos_Macros.hpp>
 #include <Kokkos_HIP_Space.hpp>
 #include <HIP/Kokkos_HIP_Error.hpp>
 
@@ -56,6 +57,20 @@ namespace Kokkos {
 namespace Experimental {
 namespace Impl {
 
+#if defined(KOKKOS_ARCH_NAVI21)
+struct HIPTraits {
+  static int constexpr WarpSize       = 32;
+  static int constexpr WarpIndexMask  = 0x001f; /* hexadecimal for 31 */
+  static int constexpr WarpIndexShift = 5;      /* WarpSize == 1 << WarpShift*/
+  static int constexpr ConservativeThreadsPerBlock =
+      256;  // conservative fallback blocksize in case of spills
+  static int constexpr MaxThreadsPerBlock =
+      1024;  // the maximum we can fit in a block
+  static int constexpr ConstantMemoryUsage        = 0x008000; /* 32k bytes */
+  static int constexpr KernelArgumentLimit        = 0x001000; /*  4k bytes */
+  static int constexpr ConstantMemoryUseThreshold = 0x000200; /* 512 bytes */
+};
+#else
 struct HIPTraits {
   static int constexpr WarpSize       = 64;
   static int constexpr WarpIndexMask  = 0x003f; /* hexadecimal for 63 */
@@ -68,6 +83,7 @@ struct HIPTraits {
   static int constexpr KernelArgumentLimit        = 0x001000; /*  4k bytes */
   static int constexpr ConstantMemoryUseThreshold = 0x000200; /* 512 bytes */
 };
+#endif
 
 //----------------------------------------------------------------------------
 

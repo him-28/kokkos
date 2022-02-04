@@ -332,7 +332,9 @@ __device__ void hip_intra_block_reduce_scan(
     block_reduce_step(rtid_intra, tdata_intra, 2);
     block_reduce_step(rtid_intra, tdata_intra, 3);
     block_reduce_step(rtid_intra, tdata_intra, 4);
-    block_reduce_step(rtid_intra, tdata_intra, 5);
+    if (Experimental::Impl::HIPTraits::WarpSize == 64) {
+      block_reduce_step(rtid_intra, tdata_intra, 5);
+    }
   }
 
   __syncthreads();  // Wait for all warps to reduce
@@ -345,6 +347,11 @@ __device__ void hip_intra_block_reduce_scan(
     if (rtid_inter < blockDim.y) {
       pointer_type const tdata_inter = base_data + value_count * rtid_inter;
 
+      if (Experimental::Impl::HIPTraits::WarpSize == 32) {
+        if ((1 << 5) < BlockSizeMask) {
+          block_reduce_step(rtid_inter, tdata_inter, 5);
+        }
+      }
       if ((1 << 6) < BlockSizeMask) {
         block_reduce_step(rtid_inter, tdata_inter, 6);
       }
@@ -357,8 +364,10 @@ __device__ void hip_intra_block_reduce_scan(
       if ((1 << 9) < BlockSizeMask) {
         block_reduce_step(rtid_inter, tdata_inter, 9);
       }
-      if ((1 << 10) < BlockSizeMask) {
-        block_reduce_step(rtid_inter, tdata_inter, 10);
+      if (Experimental::Impl::HIPTraits::WarpSize == 64) {
+        if ((1 << 10) < BlockSizeMask) {
+          block_reduce_step(rtid_inter, tdata_inter, 10);
+        }
       }
     }
   }
