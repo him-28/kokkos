@@ -58,6 +58,9 @@ namespace Experimental {
 namespace Impl {
 
 #if defined(KOKKOS_ARCH_NAVI21)
+#if defined(KOKKOS_ARCH_GFX900) || defined(KOKKOS_ARCH_GFX906) || defined(KOKKOS_ARCH_GFX90a)
+#error Compiling for AMD Navi21 and GFX9xx architectures is mutually exclusive. Please select either Navi21 or any gfx9xx.
+#endif
 struct HIPTraits {
   static int constexpr WarpSize       = 32;
   static int constexpr WarpIndexMask  = 0x001f; /* hexadecimal for 31 */
