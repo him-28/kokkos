@@ -59,6 +59,12 @@
 #define MATHEMATICAL_FUNCTIONS_HAVE_LONG_DOUBLE_OVERLOADS
 #endif
 
+// WORKAROUND icpx changing default FP model when optimization level is >= 1
+// using -fp-model=precise works too
+#if defined(__INTEL_LLVM_COMPILER)
+#define KOKKOS_IMPL_WORKAROUND_INTEL_LLVM_DEFAULT_FLOATING_POINT_MODEL
+#endif
+
 // clang-format off
 template <class>
 struct math_unary_function_return_type;
@@ -342,7 +348,13 @@ DEFINE_UNARY_FUNCTION_EVAL(asinh, 4);
 DEFINE_UNARY_FUNCTION_EVAL(acosh, 2);
 DEFINE_UNARY_FUNCTION_EVAL(atanh, 2);
 
+#if defined(__APPLE__)
+// Apple's standard library implementation seems to have a poor implementation
+DEFINE_UNARY_FUNCTION_EVAL(erf, 5);
+#else
 DEFINE_UNARY_FUNCTION_EVAL(erf, 2);
+#endif
+
 DEFINE_UNARY_FUNCTION_EVAL(erfc, 5);
 // has a larger error due to some impls doing integer exact.
 // We cast always to double leading to larger difference when comparing our
@@ -917,9 +929,7 @@ struct TestAbsoluteValueFunction {
     using Kokkos::Experimental::isinf;
     using Kokkos::Experimental::isnan;
     if (abs(-0.) != 0.
-    // WORKAROUND icpx changing default FP model when optimization level is >= 1
-    // using -fp-model=precise works too
-#ifndef __INTEL_LLVM_COMPILER
+#ifndef KOKKOS_IMPL_WORKAROUND_INTEL_LLVM_DEFAULT_FLOATING_POINT_MODEL
         || !isinf(abs(-INFINITY)) || !isnan(abs(-NAN))
 #endif
     ) {
@@ -941,4 +951,74 @@ struct TestAbsoluteValueFunction {
 
 TEST(TEST_CATEGORY, mathematical_functions_absolute_value) {
   TestAbsoluteValueFunction<TEST_EXECSPACE>();
+}
+
+template <class Space>
+struct TestIsNaN {
+  TestIsNaN() { run(); }
+  void run() const {
+    int errors = 0;
+    Kokkos::parallel_reduce(Kokkos::RangePolicy<Space>(0, 1), *this, errors);
+    ASSERT_EQ(errors, 0);
+  }
+  KOKKOS_FUNCTION void operator()(int, int& e) const {
+    using Kokkos::Experimental::isnan;
+    using Kokkos::Experimental::quiet_NaN;
+    using Kokkos::Experimental::signaling_NaN;
+    if (isnan(1) || isnan(INT_MAX)) {
+      ++e;
+      KOKKOS_IMPL_DO_NOT_USE_PRINTF("failed isnan(integral)\n");
+    }
+    if (isnan(2.f)
+#ifndef KOKKOS_IMPL_WORKAROUND_INTEL_LLVM_DEFAULT_FLOATING_POINT_MODEL
+        || !isnan(quiet_NaN<float>::value) ||
+        !isnan(signaling_NaN<float>::value)
+#endif
+
+    ) {
+      ++e;
+      KOKKOS_IMPL_DO_NOT_USE_PRINTF("failed isnan(float)\n");
+    }
+    if (isnan(3.)
+#ifndef KOKKOS_IMPL_WORKAROUND_INTEL_LLVM_DEFAULT_FLOATING_POINT_MODEL
+        || !isnan(quiet_NaN<double>::value) ||
+        !isnan(signaling_NaN<double>::value)
+#endif
+    ) {
+      ++e;
+      KOKKOS_IMPL_DO_NOT_USE_PRINTF("failed isnan(double)\n");
+    }
+#ifdef MATHEMATICAL_FUNCTIONS_HAVE_LONG_DOUBLE_OVERLOADS
+    if (isnan(4.l)
+#ifndef KOKKOS_IMPL_WORKAROUND_INTEL_LLVM_DEFAULT_FLOATING_POINT_MODEL
+        || !isnan(quiet_NaN<long double>::value) ||
+        !isnan(signaling_NaN<long double>::value)
+#endif
+    ) {
+      ++e;
+      KOKKOS_IMPL_DO_NOT_USE_PRINTF("failed isnan(long double)\n");
+    }
+#endif
+    // special values
+    if (isnan(INFINITY)
+#ifndef KOKKOS_IMPL_WORKAROUND_INTEL_LLVM_DEFAULT_FLOATING_POINT_MODEL
+        || !isnan(NAN)
+#endif
+    ) {
+      ++e;
+      KOKKOS_IMPL_DO_NOT_USE_PRINTF(
+          "failed isnan(floating_point) special values\n");
+    }
+
+    static_assert(std::is_same<decltype(isnan(1)), bool>::value, "");
+    static_assert(std::is_same<decltype(isnan(2.f)), bool>::value, "");
+    static_assert(std::is_same<decltype(isnan(3.)), bool>::value, "");
+#ifdef MATHEMATICAL_FUNCTIONS_HAVE_LONG_DOUBLE_OVERLOADS
+    static_assert(std::is_same<decltype(isnan(4.l)), bool>::value, "");
+#endif
+  }
+};
+
+TEST(TEST_CATEGORY, mathematical_functions_isnan) {
+  TestIsNaN<TEST_EXECSPACE>();
 }

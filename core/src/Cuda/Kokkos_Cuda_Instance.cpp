@@ -129,16 +129,6 @@ int cuda_kernel_arch() {
   return arch;
 }
 
-#ifdef KOKKOS_ENABLE_CUDA_UVM
-bool cuda_launch_blocking() {
-  const char *env = getenv("CUDA_LAUNCH_BLOCKING");
-
-  if (env == nullptr) return false;
-
-  return std::stoi(env);
-}
-#endif
-
 }  // namespace
 
 void cuda_device_synchronize(const std::string &name) {
@@ -271,6 +261,7 @@ const CudaInternalDevices &CudaInternalDevices::singleton() {
 
 unsigned long *CudaInternal::constantMemHostStaging = nullptr;
 cudaEvent_t CudaInternal::constantMemReusable       = nullptr;
+std::mutex CudaInternal::constantMemMutex;
 
 //----------------------------------------------------------------------------
 
@@ -310,7 +301,7 @@ CudaInternal::~CudaInternal() {
   m_cudaArch                = -1;
   m_multiProcCount          = 0;
   m_maxWarpCount            = 0;
-  m_maxBlock                = 0;
+  m_maxBlock                = {0, 0, 0};
   m_maxSharedWords          = 0;
   m_maxConcurrency          = 0;
   m_scratchSpaceCount       = 0;
@@ -442,7 +433,9 @@ void CudaInternal::initialize(int cuda_device_id, cudaStream_t stream,
     //----------------------------------
     // Maximum number of blocks:
 
-    m_maxBlock = cudaProp.maxGridSize[0];
+    m_maxBlock[0] = cudaProp.maxGridSize[0];
+    m_maxBlock[1] = cudaProp.maxGridSize[1];
+    m_maxBlock[2] = cudaProp.maxGridSize[2];
 
     m_shmemPerSM       = cudaProp.sharedMemPerMultiprocessor;
     m_maxShmemPerBlock = cudaProp.sharedMemPerBlock;
@@ -526,15 +519,6 @@ void CudaInternal::initialize(int cuda_device_id, cudaStream_t stream,
   }
 
 #ifdef KOKKOS_ENABLE_CUDA_UVM
-  if (Kokkos::show_warnings() && !cuda_launch_blocking()) {
-    std::cerr << R"warning(
-Kokkos::Cuda::initialize WARNING: Cuda is allocating into UVMSpace by default
-                                  without setting CUDA_LAUNCH_BLOCKING=1.
-                                  The code must call Cuda().fence() after each kernel
-                                  or will likely crash when accessing data on the host.)warning"
-              << std::endl;
-  }
-
   const char *env_force_device_alloc =
       getenv("CUDA_MANAGED_FORCE_DEVICE_ALLOC");
   bool force_device_alloc;
@@ -591,7 +575,7 @@ Kokkos::Cuda::initialize WARNING: Cuda is allocating into UVMSpace by default
 using ScratchGrain = Cuda::size_type[Impl::CudaTraits::WarpSize];
 enum { sizeScratchGrain = sizeof(ScratchGrain) };
 
-Cuda::size_type *CudaInternal::scratch_flags(const Cuda::size_type size) const {
+Cuda::size_type *CudaInternal::scratch_flags(const std::size_t size) const {
   if (verify_is_initialized("scratch_flags") &&
       m_scratchFlagsCount * sizeScratchGrain < size) {
     m_scratchFlagsCount = (size + sizeScratchGrain - 1) / sizeScratchGrain;
@@ -616,7 +600,7 @@ Cuda::size_type *CudaInternal::scratch_flags(const Cuda::size_type size) const {
   return m_scratchFlags;
 }
 
-Cuda::size_type *CudaInternal::scratch_space(const Cuda::size_type size) const {
+Cuda::size_type *CudaInternal::scratch_space(const std::size_t size) const {
   if (verify_is_initialized("scratch_space") &&
       m_scratchSpaceCount * sizeScratchGrain < size) {
     m_scratchSpaceCount = (size + sizeScratchGrain - 1) / sizeScratchGrain;
@@ -638,8 +622,7 @@ Cuda::size_type *CudaInternal::scratch_space(const Cuda::size_type size) const {
   return m_scratchSpace;
 }
 
-Cuda::size_type *CudaInternal::scratch_unified(
-    const Cuda::size_type size) const {
+Cuda::size_type *CudaInternal::scratch_unified(const std::size_t size) const {
   if (verify_is_initialized("scratch_unified") && m_scratchUnifiedSupported &&
       m_scratchUnifiedCount * sizeScratchGrain < size) {
     m_scratchUnifiedCount = (size + sizeScratchGrain - 1) / sizeScratchGrain;
@@ -662,8 +645,7 @@ Cuda::size_type *CudaInternal::scratch_unified(
   return m_scratchUnified;
 }
 
-Cuda::size_type *CudaInternal::scratch_functor(
-    const Cuda::size_type size) const {
+Cuda::size_type *CudaInternal::scratch_functor(const std::size_t size) const {
   if (verify_is_initialized("scratch_functor") && m_scratchFunctorSize < size) {
     m_scratchFunctorSize = size;
 
@@ -694,7 +676,7 @@ std::pair<void *, int> CudaInternal::resize_team_scratch_space(
   int current_team_scratch = 0;
   int zero                 = 0;
   int one                  = 1;
-  while (m_team_scratch_pool[current_team_scratch].compare_exchange_weak(
+  while (!m_team_scratch_pool[current_team_scratch].compare_exchange_weak(
       zero, one, std::memory_order_release, std::memory_order_relaxed)) {
     current_team_scratch = (current_team_scratch + 1) % m_n_team_scratch;
   }
@@ -753,7 +735,7 @@ void CudaInternal::finalize() {
     m_cudaDev                 = -1;
     m_multiProcCount          = 0;
     m_maxWarpCount            = 0;
-    m_maxBlock                = 0;
+    m_maxBlock                = {0, 0, 0};
     m_maxSharedWords          = 0;
     m_scratchSpaceCount       = 0;
     m_scratchFlagsCount       = 0;
@@ -804,7 +786,7 @@ Cuda::size_type cuda_internal_maximum_warp_count() {
   return CudaInternal::singleton().m_maxWarpCount;
 }
 
-Cuda::size_type cuda_internal_maximum_grid_count() {
+std::array<Cuda::size_type, 3> cuda_internal_maximum_grid_count() {
   return CudaInternal::singleton().m_maxBlock;
 }
 
@@ -813,17 +795,17 @@ Cuda::size_type cuda_internal_maximum_shared_words() {
 }
 
 Cuda::size_type *cuda_internal_scratch_space(const Cuda &instance,
-                                             const Cuda::size_type size) {
+                                             const std::size_t size) {
   return instance.impl_internal_space_instance()->scratch_space(size);
 }
 
 Cuda::size_type *cuda_internal_scratch_flags(const Cuda &instance,
-                                             const Cuda::size_type size) {
+                                             const std::size_t size) {
   return instance.impl_internal_space_instance()->scratch_flags(size);
 }
 
 Cuda::size_type *cuda_internal_scratch_unified(const Cuda &instance,
-                                               const Cuda::size_type size) {
+                                               const std::size_t size) {
   return instance.impl_internal_space_instance()->scratch_unified(size);
 }
 

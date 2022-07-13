@@ -115,7 +115,7 @@ void SYCLInternal::initialize(const sycl::queue& q) {
     m_queue = q;
     // guard pushing to all_queues
     {
-      std::lock_guard<std::mutex> lock(mutex);
+      std::scoped_lock lock(mutex);
       all_queues.push_back(&m_queue);
     }
     const sycl::device& d = m_queue->get_device();
@@ -217,14 +217,13 @@ void SYCLInternal::finalize() {
   m_indirectReducerMem.reset();
   // guard erasing from all_queues
   {
-    std::lock_guard<std::mutex> lock(mutex);
+    std::scoped_lock lock(mutex);
     all_queues.erase(std::find(all_queues.begin(), all_queues.end(), &m_queue));
   }
   m_queue.reset();
 }
 
-void* SYCLInternal::scratch_space(
-    const Kokkos::Experimental::SYCL::size_type size) {
+void* SYCLInternal::scratch_space(const std::size_t size) {
   const size_type sizeScratchGrain =
       sizeof(Kokkos::Experimental::SYCL::size_type);
   if (verify_is_initialized("scratch_space") &&
@@ -250,8 +249,7 @@ void* SYCLInternal::scratch_space(
   return m_scratchSpace;
 }
 
-void* SYCLInternal::scratch_flags(
-    const Kokkos::Experimental::SYCL::size_type size) {
+void* SYCLInternal::scratch_flags(const std::size_t size) {
   const size_type sizeScratchGrain =
       sizeof(Kokkos::Experimental::SYCL::size_type);
   if (verify_is_initialized("scratch_flags") &&

@@ -248,7 +248,7 @@ class TeamPolicyInternal<Kokkos::Experimental::HIP, Properties...>
     // Make sure league size is permissible
     if (league_size_ >=
         static_cast<int>(
-            ::Kokkos::Experimental::Impl::hip_internal_maximum_grid_count()))
+            ::Kokkos::Experimental::Impl::hip_internal_maximum_grid_count()[0]))
       Impl::throw_runtime_exception(
           "Requested too large league_size for TeamPolicy on HIP execution "
           "space.");
@@ -479,7 +479,7 @@ class ParallelFor<FunctorType, Kokkos::TeamPolicy<Properties...>,
   int m_scratch_size[2];
   // Only let one ParallelFor/Reduce modify the team scratch memory. The
   // constructor acquires the mutex which is released in the destructor.
-  std::unique_lock<std::mutex> m_scratch_lock;
+  std::lock_guard<std::mutex> m_scratch_lock;
 
   template <typename TagType>
   __device__ inline
@@ -677,7 +677,7 @@ class ParallelReduce<FunctorType, Kokkos::TeamPolicy<Properties...>,
   const size_type m_vector_size;
   // Only let one ParallelFor/Reduce modify the team scratch memory. The
   // constructor acquires the mutex which is released in the destructor.
-  std::unique_lock<std::mutex> m_scratch_lock;
+  std::lock_guard<std::mutex> m_scratch_lock;
 
   template <class TagType>
   __device__ inline
@@ -839,12 +839,12 @@ class ParallelReduce<FunctorType, Kokkos::TeamPolicy<Properties...>,
   }
 
   inline void execute() {
-    const int nwork            = m_league_size * m_team_size;
+    const bool is_empty_range  = m_league_size == 0 || m_team_size == 0;
     const bool need_device_set = ReduceFunctorHasInit<FunctorType>::value ||
                                  ReduceFunctorHasFinal<FunctorType>::value ||
                                  !m_result_ptr_host_accessible ||
                                  !std::is_same<ReducerType, InvalidType>::value;
-    if ((nwork > 0) || need_device_set) {
+    if (!is_empty_range || need_device_set) {
       const int block_count =
           UseShflReduction
               ? std::min(
@@ -854,15 +854,16 @@ class ParallelReduce<FunctorType, Kokkos::TeamPolicy<Properties...>,
               : std::min(static_cast<int>(m_league_size), m_team_size);
 
       m_scratch_space = Kokkos::Experimental::Impl::hip_internal_scratch_space(
+          m_policy.space(),
           value_traits::value_size(
               reducer_conditional::select(m_functor, m_reducer)) *
-          block_count);
+              block_count);
       m_scratch_flags = Kokkos::Experimental::Impl::hip_internal_scratch_flags(
-          sizeof(size_type));
+          m_policy.space(), sizeof(size_type));
 
       dim3 block(m_vector_size, m_team_size, 1);
       dim3 grid(block_count, 1, 1);
-      if (nwork == 0) {
+      if (is_empty_range) {
         block = dim3(1, 1, 1);
         grid  = dim3(1, 1, 1);
       }
